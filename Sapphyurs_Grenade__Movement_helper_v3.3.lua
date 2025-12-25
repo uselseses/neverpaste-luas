@@ -1,6 +1,377 @@
 ---@diagnostic disable: undefined-global
-local inspect = require("neverlose/inspect")
-local http_lib = require("neverlose/http_lib")
+local inspect = (function()
+local inspect = { Options = {} }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+inspect._VERSION = 'inspect.lua 3.1.0'
+inspect._URL = 'http://github.com/kikito/inspect.lua'
+inspect._DESCRIPTION = 'human-readable representations of tables'
+inspect._LICENSE = [[
+  MIT LICENSE
+
+  Copyright (c) 2022 Enrique García Cota
+
+  Permission is hereby granted, free of charge, to any person obtaining a
+  copy of this software and associated documentation files (the
+  "Software"), to deal in the Software without restriction, including
+  without limitation the rights to use, copy, modify, merge, publish,
+  distribute, sublicense, and/or sell copies of the Software, and to
+  permit persons to whom the Software is furnished to do so, subject to
+  the following conditions:
+
+  The above copyright notice and this permission notice shall be included
+  in all copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+  OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+  MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+  IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+  CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+  TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+  SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+]]
+inspect.KEY = setmetatable({}, { __tostring = function() return 'inspect.KEY' end })
+inspect.METATABLE = setmetatable({}, { __tostring = function() return 'inspect.METATABLE' end })
+
+local tostring = tostring
+local rep = string.rep
+local match = string.match
+local char = string.char
+local gsub = string.gsub
+local fmt = string.format
+
+local _rawget
+if rawget then
+   _rawget = rawget
+else
+   _rawget = function(t, k) return t[k] end
+end
+
+local function rawpairs(t)
+   return next, t, nil
+end
+
+
+
+local function smartQuote(str)
+   if match(str, '"') and not match(str, "'") then
+      return "'" .. str .. "'"
+   end
+   return '"' .. gsub(str, '"', '\\"') .. '"'
+end
+
+
+local shortControlCharEscapes = {
+   ["\a"] = "\\a", ["\b"] = "\\b", ["\f"] = "\\f", ["\n"] = "\\n",
+   ["\r"] = "\\r", ["\t"] = "\\t", ["\v"] = "\\v", ["\127"] = "\\127",
+}
+local longControlCharEscapes = { ["\127"] = "\127" }
+for i = 0, 31 do
+   local ch = char(i)
+   if not shortControlCharEscapes[ch] then
+      shortControlCharEscapes[ch] = "\\" .. i
+      longControlCharEscapes[ch] = fmt("\\%03d", i)
+   end
+end
+
+local function escape(str)
+   return (gsub(gsub(gsub(str, "\\", "\\\\"),
+   "(%c)%f[0-9]", longControlCharEscapes),
+   "%c", shortControlCharEscapes))
+end
+
+local luaKeywords = {
+   ['and'] = true,
+   ['break'] = true,
+   ['do'] = true,
+   ['else'] = true,
+   ['elseif'] = true,
+   ['end'] = true,
+   ['false'] = true,
+   ['for'] = true,
+   ['function'] = true,
+   ['goto'] = true,
+   ['if'] = true,
+   ['in'] = true,
+   ['local'] = true,
+   ['nil'] = true,
+   ['not'] = true,
+   ['or'] = true,
+   ['repeat'] = true,
+   ['return'] = true,
+   ['then'] = true,
+   ['true'] = true,
+   ['until'] = true,
+   ['while'] = true,
+}
+
+local function isIdentifier(str)
+   return type(str) == "string" and
+   not not str:match("^[_%a][_%a%d]*$") and
+   not luaKeywords[str]
+end
+
+local flr = math.floor
+local function isSequenceKey(k, sequenceLength)
+   return type(k) == "number" and
+   flr(k) == k and
+   1 <= (k) and
+   k <= sequenceLength
+end
+
+local defaultTypeOrders = {
+   ['number'] = 1, ['boolean'] = 2, ['string'] = 3, ['table'] = 4,
+   ['function'] = 5, ['userdata'] = 6, ['thread'] = 7,
+}
+
+local function sortKeys(a, b)
+   local ta, tb = type(a), type(b)
+
+
+   if ta == tb and (ta == 'string' or ta == 'number') then
+      return (a) < (b)
+   end
+
+   local dta = defaultTypeOrders[ta] or 100
+   local dtb = defaultTypeOrders[tb] or 100
+
+
+   return dta == dtb and ta < tb or dta < dtb
+end
+
+local function getKeys(t)
+
+   local seqLen = 1
+   while _rawget(t, seqLen) ~= nil do
+      seqLen = seqLen + 1
+   end
+   seqLen = seqLen - 1
+
+   local keys, keysLen = {}, 0
+   for k in rawpairs(t) do
+      if not isSequenceKey(k, seqLen) then
+         keysLen = keysLen + 1
+         keys[keysLen] = k
+      end
+   end
+   table.sort(keys, sortKeys)
+   return keys, keysLen, seqLen
+end
+
+local function countCycles(x, cycles)
+   if type(x) == "table" then
+      if cycles[x] then
+         cycles[x] = cycles[x] + 1
+      else
+         cycles[x] = 1
+         for k, v in rawpairs(x) do
+            countCycles(k, cycles)
+            countCycles(v, cycles)
+         end
+         countCycles(getmetatable(x), cycles)
+      end
+   end
+end
+
+local function makePath(path, a, b)
+   local newPath = {}
+   local len = #path
+   for i = 1, len do newPath[i] = path[i] end
+
+   newPath[len + 1] = a
+   newPath[len + 2] = b
+
+   return newPath
+end
+
+
+local function processRecursive(process,
+   item,
+   path,
+   visited)
+   if item == nil then return nil end
+   if visited[item] then return visited[item] end
+
+   local processed = process(item, path)
+   if type(processed) == "table" then
+      local processedCopy = {}
+      visited[item] = processedCopy
+      local processedKey
+
+      for k, v in rawpairs(processed) do
+         processedKey = processRecursive(process, k, makePath(path, k, inspect.KEY), visited)
+         if processedKey ~= nil then
+            processedCopy[processedKey] = processRecursive(process, v, makePath(path, processedKey), visited)
+         end
+      end
+
+      local mt = processRecursive(process, getmetatable(processed), makePath(path, inspect.METATABLE), visited)
+      if type(mt) ~= 'table' then mt = nil end
+      setmetatable(processedCopy, mt)
+      processed = processedCopy
+   end
+   return processed
+end
+
+local function puts(buf, str)
+   buf.n = buf.n + 1
+   buf[buf.n] = str
+end
+
+
+
+local Inspector = {}
+
+
+
+
+
+
+
+
+
+
+local Inspector_mt = { __index = Inspector }
+
+local function tabify(inspector)
+   puts(inspector.buf, inspector.newline .. rep(inspector.indent, inspector.level))
+end
+
+function Inspector:getId(v)
+   local id = self.ids[v]
+   local ids = self.ids
+   if not id then
+      local tv = type(v)
+      id = (ids[tv] or 0) + 1
+      ids[v], ids[tv] = id, id
+   end
+   return tostring(id)
+end
+
+function Inspector:putValue(v)
+   local buf = self.buf
+   local tv = type(v)
+   if tv == 'string' then
+      puts(buf, smartQuote(escape(v)))
+   elseif tv == 'number' or tv == 'boolean' or tv == 'nil' or
+      tv == 'cdata' or tv == 'ctype' then
+      puts(buf, tostring(v))
+   elseif tv == 'table' and not self.ids[v] then
+      local t = v
+
+      if t == inspect.KEY or t == inspect.METATABLE then
+         puts(buf, tostring(t))
+      elseif self.level >= self.depth then
+         puts(buf, '{...}')
+      else
+         if self.cycles[t] > 1 then puts(buf, fmt('<%d>', self:getId(t))) end
+
+         local keys, keysLen, seqLen = getKeys(t)
+
+         puts(buf, '{')
+         self.level = self.level + 1
+
+         for i = 1, seqLen + keysLen do
+            if i > 1 then puts(buf, ',') end
+            if i <= seqLen then
+               puts(buf, ' ')
+               self:putValue(t[i])
+            else
+               local k = keys[i - seqLen]
+               tabify(self)
+               if isIdentifier(k) then
+                  puts(buf, k)
+               else
+                  puts(buf, "[")
+                  self:putValue(k)
+                  puts(buf, "]")
+               end
+               puts(buf, ' = ')
+               self:putValue(t[k])
+            end
+         end
+
+         local mt = getmetatable(t)
+         if type(mt) == 'table' then
+            if seqLen + keysLen > 0 then puts(buf, ',') end
+            tabify(self)
+            puts(buf, '<metatable> = ')
+            self:putValue(mt)
+         end
+
+         self.level = self.level - 1
+
+         if keysLen > 0 or type(mt) == 'table' then
+            tabify(self)
+         elseif seqLen > 0 then
+            puts(buf, ' ')
+         end
+
+         puts(buf, '}')
+      end
+
+   else
+      puts(buf, fmt('<%s %d>', tv, self:getId(v)))
+   end
+end
+
+
+
+
+function inspect.inspect(root, options)
+   options = options or {}
+
+   local depth = options.depth or (math.huge)
+   local newline = options.newline or '\n'
+   local indent = options.indent or '  '
+   local process = options.process
+
+   if process then
+      root = processRecursive(process, root, {}, {})
+   end
+
+   local cycles = {}
+   countCycles(root, cycles)
+
+   local inspector = setmetatable({
+      buf = { n = 0 },
+      ids = {},
+      cycles = cycles,
+      depth = depth,
+      level = 0,
+      newline = newline,
+      indent = indent,
+   }, Inspector_mt)
+
+   inspector:putValue(root)
+
+   return table.concat(inspector.buf)
+end
+
+setmetatable(inspect, {
+   __call = function(_, root, options)
+      return inspect.inspect(root, options)
+   end,
+})
+
+return inspect
+end)()
+
 local print = function(...)
     local text = {...}
     local new_text = {}
@@ -14,8 +385,81 @@ local print = function(...)
     end
     print_raw('\a3A80D9[neverlose]\aD9D9D9 '..text)
 end
-local brenderer = require("neverlose/renderer")
-local renderer = require("neverlose/b_renderer")
+
+local renderer = (function()
+local r0_0 = render
+r0_0.load_image_file = render.load_image_from_file
+r0_0.load_rgba = render.load_image_rgba
+r0_0.rectangle = render.rect
+r0_0.rectangle_blur = render.blur
+r0_0.rectangle_outline = render.rect_outline
+function r0_0.circle_blur(r0_2, r1_2, r2_2, r3_2, r4_2, r5_2)
+  -- line: [0, 0] id: 2
+  for r9_2 = r2_2, r2_2 + math.abs(r3_2 * 360), 1 do
+    local r10_2 = r0_2 + vector(math.cos(r9_2 * math.pi / 180) * r1_2, math.sin(r9_2 * math.pi / 180) * r1_2)
+    local r11_2 = r0_2 + vector(math.cos((r9_2 + 1) * math.pi / 180) * r1_2, math.sin((r9_2 + 1) * math.pi / 180) * r1_2)
+    local r12_2 = render.poly_blur
+    local r13_2 = r5_2
+    if not r13_2 then
+      r13_2 = 1
+    end
+    local r14_2 = r4_2
+    if not r14_2 then
+      r14_2 = 0
+    end
+    r12_2(r13_2, r14_2, r0_2, r0_2, r11_2)
+    r12_2 = render.poly_blur
+    r13_2 = r5_2
+    if not r13_2 then
+      r13_2 = 1
+    end
+    r14_2 = r4_2
+    if not r14_2 then
+      r14_2 = 0
+    end
+    r12_2(r13_2, r14_2, r0_2, r10_2, r11_2)
+  end
+end
+function r0_0.circle_outline_blur(r0_1, r1_1, r2_1, r3_1, r4_1, r5_1, r6_1)
+  -- line: [0, 0] id: 1
+  local r7_1 = r4_1
+  if not r7_1 then
+    r7_1 = 0
+  end
+  r4_1 = r1_1 - r7_1
+  for r10_1 = r2_1, r2_1 + math.abs(r3_1 * 360), 1 do
+    local r11_1 = math.cos(r10_1 * math.pi / 180)
+    local r12_1 = math.sin(r10_1 * math.pi / 180)
+    local r13_1 = math.cos((r10_1 + 1) * math.pi / 180)
+    local r14_1 = math.sin((r10_1 + 1) * math.pi / 180)
+    local r15_1 = r0_1 + vector(r11_1 * r1_1, r12_1 * r1_1)
+    local r16_1 = r0_1 + vector(r13_1 * r1_1, r14_1 * r1_1)
+    local r17_1 = r0_1 + vector(r11_1 * r4_1, r12_1 * r4_1)
+    local r18_1 = r0_1 + vector(r13_1 * r4_1, r14_1 * r4_1)
+    local r19_1 = render.poly_blur
+    local r20_1 = r6_1
+    if not r20_1 then
+      r20_1 = 1
+    end
+    local r21_1 = r5_1
+    if not r21_1 then
+      r21_1 = 0
+    end
+    r19_1(r20_1, r21_1, r15_1, r16_1, r17_1)
+    r19_1 = render.poly_blur
+    r20_1 = r6_1
+    if not r20_1 then
+      r20_1 = 1
+    end
+    r21_1 = r5_1
+    if not r21_1 then
+      r21_1 = 0
+    end
+    r19_1(r20_1, r21_1, r16_1, r17_1, r18_1)
+  end
+end
+return r0_0
+end)()
 
 local globals = {
     chocked_commands = function()
@@ -378,7 +822,8 @@ renderer.texture = function(id, x, y, w, h, r, g, b, a, mode)
 	return render.texture(id, vector(x, y), vector(w, h), color(r, g, b, a), mode)
 end
 renderer.world_to_screen = function(x, y, z)
-    local world = brenderer.world_to_screen(vector(x, y, z))
+	local vec = vector(x, y, z)
+    local world = vec:to_screen()
     if world ~= nil then
         return world.x, world.y, world.z
     end
@@ -491,15 +936,1343 @@ ui.new_textbox = function(tab, container, name)
     return group:input(name)
 end
 
-client.old_require = require
-local require = function(modname)
-    return client.old_require(modname:gsub('gamesense', 'neverlose'))
+local weapons = (function()
+	local ffi = require "ffi"
+
+local CCSWeaponInfo_t = ffi.typeof [[
+    struct {
+        char         __pad_0x0000[4];                       // 0x0000
+        char*        console_name;                          // 0x0004
+        char         __pad_0x0008[12];                      // 0x0008
+        int          primary_clip_size;                     // 0x0014
+        int          secondary_clip_size;                   // 0x0018
+        int          primary_default_clip_size;             // 0x001c
+        int          secondary_default_clip_size;           // 0x0020
+        int          primary_reserve_ammo_max;              // 0x0024
+        int          secondary_reserve_ammo_max;            // 0x0028
+        char*        model_world;                           // 0x002c
+        char*        model_player;                          // 0x0030
+        char*        model_dropped;                         // 0x0034
+        char*        sound_empty;                           // 0x0038
+        char*        sound_single_shot;                     // 0x003c
+        char*        sound_single_shot_accurate;            // 0x0040
+        char         __pad_0x0044[12];                      // 0x0044
+        char*        sound_burst;                           // 0x0050
+        char*        sound_reload;                          // 0x0054
+        char         __pad_0x0058[16];                      // 0x0058
+        char*        sound_special1;                        // 0x0068
+        char*        sound_special2;                        // 0x006c
+        char*        sound_special3;                        // 0x0070
+        char         __pad_0x0074[4];                       // 0x0074
+        char*        sound_nearlyempty;                     // 0x0078
+        char         __pad_0x007c[4];                       // 0x007c
+        char*        primary_ammo;                          // 0x0080
+        char*        secondary_ammo;                        // 0x0084
+        char*        item_name;                             // 0x0088
+        char*        item_class;                            // 0x008c
+        bool         itemflag_exhaustible;                  // 0x0090
+        bool         model_right_handed;                    // 0x0091
+        bool         is_melee_weapon;                       // 0x0092
+        char         __pad_0x0093[9];                       // 0x0093
+        int          weapon_weight;                         // 0x009c
+        char         __pad_0x00a0[8];                       // 0x00a0
+        int          item_gear_slot_position;               // 0x00a8
+        char         __pad_0x00ac[28];                      // 0x00ac
+        int          weapon_type_int;                       // 0x00c8
+        char         __pad_0x00cc[4];                       // 0x00cc
+        int          in_game_price;                         // 0x00d0
+        int          kill_award;                            // 0x00d4
+        char*        player_animation_extension;            // 0x00d8
+        float        cycletime;                             // 0x00dc
+        float        cycletime_alt;                         // 0x00e0
+        float        time_to_idle;                          // 0x00e4
+        float        idle_interval;                         // 0x00e8
+        bool         is_full_auto;                          // 0x00ec
+        char         __pad_0x00ed[3];                       // 0x00ed
+        int          damage;                                // 0x00f0
+        float        headshot_multiplier;                   // 0x00f4
+        float        armor_ratio;                           // 0x00f8
+        int          bullets;                               // 0x00fc
+        float        penetration;                           // 0x0100
+        float        flinch_velocity_modifier_large;        // 0x0104
+        float        flinch_velocity_modifier_small;        // 0x0108
+        float        range;                                 // 0x010c
+        float        range_modifier;                        // 0x0110
+        float        throw_velocity;                        // 0x0114
+        char         __pad_0x0118[12];                      // 0x0118
+        int          has_silencer;                          // 0x0124
+        char         __pad_0x0128[4];                       // 0x0128
+        int          crosshair_min_distance;                // 0x012c
+        int          crosshair_delta_distance;              // 0x0130
+        float        max_player_speed;                      // 0x0134
+        float        max_player_speed_alt;                  // 0x0138
+        float        attack_movespeed_factor;               // 0x013c
+        float        spread;                                // 0x0140
+        float        spread_alt;                            // 0x0144
+        float        inaccuracy_crouch;                     // 0x0148
+        float        inaccuracy_crouch_alt;                 // 0x014c
+        float        inaccuracy_stand;                      // 0x0150
+        float        inaccuracy_stand_alt;                  // 0x0154
+        float        inaccuracy_jump_initial;               // 0x0158
+        float        inaccuracy_jump_apex;                  // 0x015c
+        float        inaccuracy_jump;                       // 0x0160
+        float        inaccuracy_jump_alt;                   // 0x0164
+        float        inaccuracy_land;                       // 0x0168
+        float        inaccuracy_land_alt;                   // 0x016c
+        float        inaccuracy_ladder;                     // 0x0170
+        float        inaccuracy_ladder_alt;                 // 0x0174
+        float        inaccuracy_fire;                       // 0x0178
+        float        inaccuracy_fire_alt;                   // 0x017c
+        float        inaccuracy_move;                       // 0x0180
+        float        inaccuracy_move_alt;                   // 0x0184
+        float        inaccuracy_reload;                     // 0x0188
+        int          recoil_seed;                           // 0x018c
+        float        recoil_angle;                          // 0x0190
+        float        recoil_angle_alt;                      // 0x0194
+        float        recoil_angle_variance;                 // 0x0198
+        float        recoil_angle_variance_alt;             // 0x019c
+        float        recoil_magnitude;                      // 0x01a0
+        float        recoil_magnitude_alt;                  // 0x01a4
+        float        recoil_magnitude_variance;             // 0x01a8
+        float        recoil_magnitude_variance_alt;         // 0x01ac
+        int          spread_seed;                           // 0x01b0
+        float        recovery_time_crouch;                  // 0x01b4
+        float        recovery_time_stand;                   // 0x01b8
+        float        recovery_time_crouch_final;            // 0x01bc
+        float        recovery_time_stand_final;             // 0x01c0
+        int          recovery_transition_start_bullet;      // 0x01c4
+        int          recovery_transition_end_bullet;        // 0x01c8
+        bool         unzoom_after_shot;                     // 0x01cc
+        bool         hide_view_model_zoomed;                // 0x01cd
+        char         __pad_0x01ce[2];                       // 0x01ce
+        int          zoom_levels;                           // 0x01d0
+        int          zoom_fov_1;                            // 0x01d4
+        int          zoom_fov_2;                            // 0x01d8
+        int          zoom_time_0;                           // 0x01dc
+        int          zoom_time_1;                           // 0x01e0
+        int          zoom_time_2;                           // 0x01e4
+        char*        addon_location;                        // 0x01e8
+        char         __pad_0x01ec[4];                       // 0x01ec
+        float        addon_scale;                           // 0x01f0
+        char*        eject_brass_effect;                    // 0x01f4
+        char*        tracer_effect;                         // 0x01f8
+        int          tracer_frequency;                      // 0x01fc
+        int          tracer_frequency_alt;                  // 0x0200
+        char*        muzzle_flash_effect_1st_person;        // 0x0204
+        char*        muzzle_flash_effect_1st_person_alt;    // 0x0208
+        char*        muzzle_flash_effect_3rd_person;        // 0x020c
+        char*        muzzle_flash_effect_3rd_person_alt;    // 0x0210
+        char*        heat_effect;                           // 0x0214
+        float        heat_per_shot;                         // 0x0218
+        char*        zoom_in_sound;                         // 0x021c
+        char*        zoom_out_sound;                        // 0x0220
+        char         __pad_0x0224[4];                       // 0x0224
+        float        inaccuracy_alt_sound_threshold;        // 0x0228
+        float        bot_audible_range;                     // 0x022c
+        char         __pad_0x0230[12];                      // 0x0230
+        bool         has_burst_mode;                        // 0x023c
+        bool         is_revolver;                           // 0x023d
+        char         __pad_0x023e[2];                       // 0x023e
+    }
+]]
+
+---@format disable-next
+local struct_keys = {"console_name", "primary_clip_size", "secondary_clip_size", "primary_default_clip_size", "secondary_default_clip_size", "primary_reserve_ammo_max", "secondary_reserve_ammo_max", "model_world", "model_player", "model_dropped", "sound_empty", "sound_single_shot", "sound_single_shot_accurate", "sound_burst", "sound_reload", "sound_special1", "sound_special2", "sound_special3", "sound_nearlyempty", "primary_ammo", "secondary_ammo", "item_name", "item_class", "itemflag_exhaustible", "model_right_handed", "is_melee_weapon", "weapon_weight", "item_gear_slot_position", "weapon_type_int", "in_game_price", "kill_award", "player_animation_extension", "cycletime", "cycletime_alt", "time_to_idle", "idle_interval", "is_full_auto", "damage", "armor_ratio", "bullets", "penetration", "flinch_velocity_modifier_large", "flinch_velocity_modifier_small", "range", "range_modifier", "throw_velocity", "has_silencer", "crosshair_min_distance", "crosshair_delta_distance", "max_player_speed", "max_player_speed_alt", "attack_movespeed_factor", "spread", "spread_alt", "inaccuracy_crouch", "inaccuracy_crouch_alt", "inaccuracy_stand", "inaccuracy_stand_alt", "inaccuracy_jump_initial", "inaccuracy_jump_apex", "inaccuracy_jump", "inaccuracy_jump_alt", "inaccuracy_land", "inaccuracy_land_alt", "inaccuracy_ladder", "inaccuracy_ladder_alt", "inaccuracy_fire", "inaccuracy_fire_alt", "inaccuracy_move", "inaccuracy_move_alt", "inaccuracy_reload", "recoil_seed", "recoil_angle", "recoil_angle_alt", "recoil_angle_variance", "recoil_angle_variance_alt", "recoil_magnitude", "recoil_magnitude_alt", "recoil_magnitude_variance", "recoil_magnitude_variance_alt", "spread_seed", "recovery_time_crouch", "recovery_time_stand", "recovery_time_crouch_final", "recovery_time_stand_final", "recovery_transition_start_bullet", "recovery_transition_end_bullet", "unzoom_after_shot", "hide_view_model_zoomed", "zoom_levels", "zoom_fov_1", "zoom_fov_2", "zoom_time_0", "zoom_time_1", "zoom_time_2", "addon_location", "addon_scale", "eject_brass_effect", "tracer_effect", "tracer_frequency", "tracer_frequency_alt", "muzzle_flash_effect_1st_person", "muzzle_flash_effect_1st_person_alt", "muzzle_flash_effect_3rd_person", "muzzle_flash_effect_3rd_person_alt", "heat_effect", "heat_per_shot", "zoom_in_sound", "zoom_out_sound", "inaccuracy_alt_sound_threshold", "bot_audible_range", "has_burst_mode", "is_revolver"}
+---@format disable-next
+local weapon_idx = {1, 2, 3, 4, 7, 8, 9, 10, 11, 13, 14, 16, 17, 19, 20, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 55, 56, 57, 59, 60, 61, 63, 64, 68, 69, 70, 72, 74, 75, 76, 78, 80, 81, 82, 83, 84, 85, 500, 503, 505, 506, 507, 508, 509, 512, 514, 515, 516, 517, 518, 519, 520, 521, 522, 523, 525}
+
+local weapon_types = {
+    [0] = "knife",
+    [1] = "pistol",
+    [2] = "smg",
+    [3] = "rifle",
+    [4] = "shotgun",
+    [5] = "sniperrifle",
+    [6] = "machinegun",
+    [7] = "c4",
+    [9] = "grenade",
+    [11] = "stackableitem",
+    [12] = "fists",
+    [13] = "breachcharge",
+    [14] = "bumpmine",
+    [15] = "tablet",
+    [16] = "melee",
+    [19] = "equipment"
+}
+
+local iweaponsystem = ffi.cast("void**", utils.opcode_scan("client.dll", "8B 35 CC CC CC CC FF 10 0F B7 C0", 2))[0]
+local native_GetCSWeaponInfo = utils.get_vfunc(2, "$*(__thiscall*)(void*, unsigned int)", CCSWeaponInfo_t)
+
+local cstr = ffi.typeof "char*"
+local extract_field = function(val) return ffi.istype(cstr, val) and ffi.string(val) or val end
+
+local js = panorama.loadstring([[
+        return {
+            get_weapon_info: (idx) => {
+                const item = InventoryAPI.GetFauxItemIDFromDefAndPaintIndex(idx)
+
+                return item && item > 0 ? InventoryAPI.BuildItemSchemaDefJSON(item): "null"
+            },
+            localize: (str) => {
+                return $.Localize(str)
+            }
+        }
+]], "CSGOMainMenu")()
+
+local weapons, weapons_index = {}, {}
+
+for x = 1, #weapon_idx do
+    local idx = weapon_idx[x]
+    local res = native_GetCSWeaponInfo(iweaponsystem, idx)
+    if res == nil then break end
+
+    local weapon = {}
+    for y = 1, #struct_keys do
+        local key = struct_keys[y]
+        weapon[key] = extract_field(res[key])
+    end
+
+    weapon.idx = idx
+    weapon.type = idx == 31 and "taser" or weapon_types[res.weapon_type_int]
+    weapon.name = js.localize(weapon.item_name)
+    weapon.raw = res
+
+    weapon.schema = json.parse(js.get_weapon_info(idx))
+
+    weapons[idx] = weapon
+    weapons_index[weapon.console_name] = weapon
 end
 
-local weapons = require "gamesense/csgo_weapons"
-local easing = require "gamesense/easing"
-local pretty_json = require "gamesense/pretty_json"
-local images = require "gamesense/images"
+setmetatable(weapons, {
+    __index = weapons_index,
+    __metatable = false,
+    __call = function(t, ent)
+        if type(ent) ~= "userdata" or not ent:is_weapon() then return end
+
+        return t[ent:get_weapon_index()]
+    end
+})
+
+return weapons
+end)()
+local easing = (function()
+local r0_0 = math.pow
+local r1_0 = math.sin
+local r2_0 = math.cos
+local r3_0 = math.pi
+local r4_0 = math.sqrt
+local r5_0 = math.abs
+local r6_0 = math.asin
+local function r8_0(r0_40, r1_40, r2_40, r3_40)
+  -- line: [0, 0] id: 40
+  r0_40 = r0_40 / r3_40
+  return r2_40 * r0_0(r0_40, 2) + r1_40
+end
+local function r9_0(r0_39, r1_39, r2_39, r3_39)
+  -- line: [0, 0] id: 39
+  r0_39 = r0_39 / r3_39
+  return -r0_39 * r0_39 * (r0_39 - 2) + r1_39
+end
+local function r12_0(r0_36, r1_36, r2_36, r3_36)
+  -- line: [0, 0] id: 36
+  r0_36 = r0_36 / r3_36
+  return r2_36 * r0_0(r0_36, 3) + r1_36
+end
+local function r13_0(r0_35, r1_35, r2_35, r3_35)
+  -- line: [0, 0] id: 35
+  r0_35 = r0_35 / r3_35 - 1
+  return r2_35 * (r0_0(r0_35, 3) + 1) + r1_35
+end
+local function r16_0(r0_32, r1_32, r2_32, r3_32)
+  -- line: [0, 0] id: 32
+  r0_32 = r0_32 / r3_32
+  return r2_32 * r0_0(r0_32, 4) + r1_32
+end
+local function r17_0(r0_31, r1_31, r2_31, r3_31)
+  -- line: [0, 0] id: 31
+  r0_31 = r0_31 / r3_31 - 1
+  return -r0_31 * (r0_0(r0_31, 4) - 1) + r1_31
+end
+local function r20_0(r0_28, r1_28, r2_28, r3_28)
+  -- line: [0, 0] id: 28
+  r0_28 = r0_28 / r3_28
+  return r2_28 * r0_0(r0_28, 5) + r1_28
+end
+local function r21_0(r0_27, r1_27, r2_27, r3_27)
+  -- line: [0, 0] id: 27
+  r0_27 = r0_27 / r3_27 - 1
+  return r2_27 * (r0_0(r0_27, 5) + 1) + r1_27
+end
+local function r24_0(r0_24, r1_24, r2_24, r3_24)
+  -- line: [0, 0] id: 24
+  return -r0_24 * r2_0(r0_24 / r3_24 * r3_0 / 2) + r2_24 + r1_24
+end
+local function r25_0(r0_23, r1_23, r2_23, r3_23)
+  -- line: [0, 0] id: 23
+  return r2_23 * r1_0(r0_23 / r3_23 * r3_0 / 2) + r1_23
+end
+local function r28_0(r0_20, r1_20, r2_20, r3_20)
+  -- line: [0, 0] id: 20
+  if r0_20 == 0 then
+    return r1_20
+  else
+    return r2_20 * r0_0(2, (r0_20 / r3_20 - 1) * 10) + r1_20 - r2_20 * 0.001
+  end
+end
+local function r29_0(r0_19, r1_19, r2_19, r3_19)
+  -- line: [0, 0] id: 19
+  if r0_19 == r3_19 then
+    return r1_19 + r2_19
+  else
+    local r5_19 = r0_0(2, r0_19 * -10 / r3_19)
+    return r2_19 * 1.001 * (-r0_19 + 1) + r1_19
+  end
+end
+local function r32_0(r0_16, r1_16, r2_16, r3_16)
+  -- line: [0, 0] id: 16
+  r0_16 = r0_16 / r3_16
+  return -r0_16 * (r4_0(r0_0(r0_16, 2) - 1) - 1) + r1_16
+end
+local function r33_0(r0_15, r1_15, r2_15, r3_15)
+  -- line: [0, 0] id: 15
+  r0_15 = r0_15 / r3_15 - 1
+  return r2_15 * r4_0((r0_0(r0_15, 2) - 1)) + r1_15
+end
+local function r36_0(r0_12, r1_12, r2_12, r3_12, r4_12, r5_12)
+  -- line: [0, 0] id: 12
+  if r0_12 == 0 then
+    return r1_12
+  end
+  r0_12 = r0_12 / r3_12
+  if r0_12 == 1 then
+    return r1_12 + r2_12
+  end
+  if not r5_12 then
+    r5_12 = r3_12 * 0.3
+  end
+  local r6_12 = nil
+  if not r4_12 or r4_12 < r5_0(r2_12) then
+    r4_12 = r2_12
+    r6_12 = r5_12 / 4
+  else
+    r6_12 = r5_12 / r3_0 * 2 * r6_0(r2_12 / r4_12)
+  end
+  r0_12 = r0_12 - 1
+  local r7_12 = r4_12 * r0_0(2, r0_12 * 10) * r1_0((r0_12 * r3_12 - r6_12) * r3_0 * 2 / r5_12)
+  return -r0_12 + r1_12
+end
+local function r37_0(r0_11, r1_11, r2_11, r3_11, r4_11, r5_11)
+  -- line: [0, 0] id: 11
+  if r0_11 == 0 then
+    return r1_11
+  end
+  r0_11 = r0_11 / r3_11
+  if r0_11 == 1 then
+    return r1_11 + r2_11
+  end
+  if not r5_11 then
+    r5_11 = r3_11 * 0.3
+  end
+  local r6_11 = nil
+  if not r4_11 or r4_11 < r5_0(r2_11) then
+    r4_11 = r2_11
+    r6_11 = r5_11 / 4
+  else
+    r6_11 = r5_11 / r3_0 * 2 * r6_0(r2_11 / r4_11)
+  end
+  return r4_11 * r0_0(2, r0_11 * -10) * r1_0((r0_11 * r3_11 - r6_11) * r3_0 * 2 / r5_11) + r2_11 + r1_11
+end
+local function r40_0(r0_8, r1_8, r2_8, r3_8, r4_8)
+  -- line: [0, 0] id: 8
+  if not r4_8 then
+    r4_8 = 1.70158
+  end
+  r0_8 = r0_8 / r3_8
+  return r2_8 * r0_8 * r0_8 * ((r4_8 + 1) * r0_8 - r4_8) + r1_8
+end
+local function r41_0(r0_7, r1_7, r2_7, r3_7, r4_7)
+  -- line: [0, 0] id: 7
+  if not r4_7 then
+    r4_7 = 1.70158
+  end
+  r0_7 = r0_7 / r3_7 - 1
+  return r2_7 * (r0_7 * r0_7 * ((r4_7 + 1) * r0_7 + r4_7) + 1) + r1_7
+end
+local function r44_0(r0_4, r1_4, r2_4, r3_4)
+  -- line: [0, 0] id: 4
+  r0_4 = r0_4 / r3_4
+  if r0_4 < 0.36363636363636365 then
+    return r2_4 * r0_4 * 7.5625 * r0_4 + r1_4
+  elseif r0_4 < 0.7272727272727273 then
+    r0_4 = r0_4 - 0.5454545454545454
+    return r2_4 * (r0_4 * 7.5625 * r0_4 + 0.75) + r1_4
+  elseif r0_4 < 0.9090909090909091 then
+    r0_4 = r0_4 - 0.8181818181818182
+    return r2_4 * (r0_4 * 7.5625 * r0_4 + 0.9375) + r1_4
+  else
+    r0_4 = r0_4 - 0.9545454545454546
+    return r2_4 * (r0_4 * 7.5625 * r0_4 + 0.984375) + r1_4
+  end
+end
+local function r45_0(r0_3, r1_3, r2_3, r3_3)
+  -- line: [0, 0] id: 3
+  return r2_3 - r44_0(r3_3 - r0_3, 0, r2_3, r3_3) + r1_3
+end
+return {
+  linear = function(r0_41, r1_41, r2_41, r3_41)
+    -- line: [0, 0] id: 41
+    return r2_41 * r0_41 / r3_41 + r1_41
+  end,
+  quad_in = r8_0,
+  quad_out = r9_0,
+  quad_in_out = function(r0_38, r1_38, r2_38, r3_38)
+    -- line: [0, 0] id: 38
+    r0_38 = r0_38 / r3_38 * 2
+    if r0_38 < 1 then
+      return r2_38 / 2 * r0_0(r0_38, 2) + r1_38
+    else
+      return -r0_38 / 2 * ((r0_38 - 1) * (r0_38 - 3) - 1) + r1_38
+    end
+  end,
+  quad_out_in = function(r0_37, r1_37, r2_37, r3_37)
+    -- line: [0, 0] id: 37
+    if r0_37 < r3_37 / 2 then
+      return r9_0(r0_37 * 2, r1_37, r2_37 / 2, r3_37)
+    else
+      return r8_0(r0_37 * 2 - r3_37, r1_37 + r2_37 / 2, r2_37 / 2, r3_37)
+    end
+  end,
+  cubic_in = r12_0,
+  cubic_out = r13_0,
+  cubic_in_out = function(r0_34, r1_34, r2_34, r3_34)
+    -- line: [0, 0] id: 34
+    r0_34 = r0_34 / r3_34 * 2
+    if r0_34 < 1 then
+      return r2_34 / 2 * r0_34 * r0_34 * r0_34 + r1_34
+    else
+      r0_34 = r0_34 - 2
+      return r2_34 / 2 * (r0_34 * r0_34 * r0_34 + 2) + r1_34
+    end
+  end,
+  cubic_out_in = function(r0_33, r1_33, r2_33, r3_33)
+    -- line: [0, 0] id: 33
+    if r0_33 < r3_33 / 2 then
+      return r13_0(r0_33 * 2, r1_33, r2_33 / 2, r3_33)
+    else
+      return r12_0(r0_33 * 2 - r3_33, r1_33 + r2_33 / 2, r2_33 / 2, r3_33)
+    end
+  end,
+  quart_in = r16_0,
+  quart_out = r17_0,
+  quart_in_out = function(r0_30, r1_30, r2_30, r3_30)
+    -- line: [0, 0] id: 30
+    r0_30 = r0_30 / r3_30 * 2
+    if r0_30 < 1 then
+      return r2_30 / 2 * r0_0(r0_30, 4) + r1_30
+    else
+      r0_30 = r0_30 - 2
+      return -r0_30 / 2 * (r0_0(r0_30, 4) - 2) + r1_30
+    end
+  end,
+  quart_out_in = function(r0_29, r1_29, r2_29, r3_29)
+    -- line: [0, 0] id: 29
+    if r0_29 < r3_29 / 2 then
+      return r17_0(r0_29 * 2, r1_29, r2_29 / 2, r3_29)
+    else
+      return r16_0(r0_29 * 2 - r3_29, r1_29 + r2_29 / 2, r2_29 / 2, r3_29)
+    end
+  end,
+  quint_in = r20_0,
+  quint_out = r21_0,
+  quint_in_out = function(r0_26, r1_26, r2_26, r3_26)
+    -- line: [0, 0] id: 26
+    r0_26 = r0_26 / r3_26 * 2
+    if r0_26 < 1 then
+      return r2_26 / 2 * r0_0(r0_26, 5) + r1_26
+    else
+      r0_26 = r0_26 - 2
+      return r2_26 / 2 * (r0_0(r0_26, 5) + 2) + r1_26
+    end
+  end,
+  quint_out_in = function(r0_25, r1_25, r2_25, r3_25)
+    -- line: [0, 0] id: 25
+    if r0_25 < r3_25 / 2 then
+      return r21_0(r0_25 * 2, r1_25, r2_25 / 2, r3_25)
+    else
+      return r20_0(r0_25 * 2 - r3_25, r1_25 + r2_25 / 2, r2_25 / 2, r3_25)
+    end
+  end,
+  sine_in = r24_0,
+  sine_out = r25_0,
+  sine_in_out = function(r0_22, r1_22, r2_22, r3_22)
+    -- line: [0, 0] id: 22
+    return -r0_22 / 2 * (r2_0(r3_0 * r0_22 / r3_22) - 1) + r1_22
+  end,
+  sine_out_in = function(r0_21, r1_21, r2_21, r3_21)
+    -- line: [0, 0] id: 21
+    if r0_21 < r3_21 / 2 then
+      return r25_0(r0_21 * 2, r1_21, r2_21 / 2, r3_21)
+    else
+      return r24_0(r0_21 * 2 - r3_21, r1_21 + r2_21 / 2, r2_21 / 2, r3_21)
+    end
+  end,
+  expo_in = r28_0,
+  expo_out = r29_0,
+  expo_in_out = function(r0_18, r1_18, r2_18, r3_18)
+    -- line: [0, 0] id: 18
+    if r0_18 == 0 then
+      return r1_18
+    end
+    if r0_18 == r3_18 then
+      return r1_18 + r2_18
+    end
+    r0_18 = r0_18 / r3_18 * 2
+    if r0_18 < 1 then
+      return r2_18 / 2 * r0_0(2, (r0_18 - 1) * 10) + r1_18 - r2_18 * 0.0005
+    else
+      r0_18 = r0_18 - 1
+      local r5_18 = r0_0(2, r0_18 * -10)
+      return r2_18 / 2 * 1.0005 * (-r0_18 + 2) + r1_18
+    end
+  end,
+  expo_out_in = function(r0_17, r1_17, r2_17, r3_17)
+    -- line: [0, 0] id: 17
+    if r0_17 < r3_17 / 2 then
+      return r29_0(r0_17 * 2, r1_17, r2_17 / 2, r3_17)
+    else
+      return r28_0(r0_17 * 2 - r3_17, r1_17 + r2_17 / 2, r2_17 / 2, r3_17)
+    end
+  end,
+  circ_in = r32_0,
+  circ_out = r33_0,
+  circ_in_out = function(r0_14, r1_14, r2_14, r3_14)
+    -- line: [0, 0] id: 14
+    r0_14 = r0_14 / r3_14 * 2
+    if r0_14 < 1 then
+      return -r0_14 / 2 * (r4_0(r0_14 * r0_14 - 1) - 1) + r1_14
+    else
+      r0_14 = r0_14 - 2
+      return r2_14 / 2 * (r4_0(r0_14 * r0_14 - 1) + 1) + r1_14
+    end
+  end,
+  circ_out_in = function(r0_13, r1_13, r2_13, r3_13)
+    -- line: [0, 0] id: 13
+    if r0_13 < r3_13 / 2 then
+      return r33_0(r0_13 * 2, r1_13, r2_13 / 2, r3_13)
+    else
+      return r32_0(r0_13 * 2 - r3_13, r1_13 + r2_13 / 2, r2_13 / 2, r3_13)
+    end
+  end,
+  elastic_in = r36_0,
+  elastic_out = r37_0,
+  elastic_in_out = function(r0_10, r1_10, r2_10, r3_10, r4_10, r5_10)
+    -- line: [0, 0] id: 10
+    if r0_10 == 0 then
+      return r1_10
+    end
+    r0_10 = r0_10 / r3_10 * 2
+    if r0_10 == 2 then
+      return r1_10 + r2_10
+    end
+    if not r5_10 then
+      r5_10 = r3_10 * 0.44999999999999996
+    end
+    if not r4_10 then
+      r4_10 = 0
+    end
+    local r6_10 = nil
+    if not r4_10 or r4_10 < r5_0(r2_10) then
+      r4_10 = r2_10
+      r6_10 = r5_10 / 4
+    else
+      r6_10 = r5_10 / r3_0 * 2 * r6_0(r2_10 / r4_10)
+    end
+    if r0_10 < 1 then
+      r0_10 = r0_10 - 1
+      return r4_10 * r0_0(2, r0_10 * 10) * r1_0((r0_10 * r3_10 - r6_10) * r3_0 * 2 / r5_10) * -0.5 + r1_10
+    else
+      r0_10 = r0_10 - 1
+      return r4_10 * r0_0(2, r0_10 * -10) * r1_0((r0_10 * r3_10 - r6_10) * r3_0 * 2 / r5_10) * 0.5 + r2_10 + r1_10
+    end
+  end,
+  elastic_out_in = function(r0_9, r1_9, r2_9, r3_9, r4_9, r5_9)
+    -- line: [0, 0] id: 9
+    if r0_9 < r3_9 / 2 then
+      return r37_0(r0_9 * 2, r1_9, r2_9 / 2, r3_9, r4_9, r5_9)
+    else
+      return r36_0(r0_9 * 2 - r3_9, r1_9 + r2_9 / 2, r2_9 / 2, r3_9, r4_9, r5_9)
+    end
+  end,
+  back_in = r40_0,
+  back_out = r41_0,
+  back_in_out = function(r0_6, r1_6, r2_6, r3_6, r4_6)
+    -- line: [0, 0] id: 6
+    if not r4_6 then
+      r4_6 = 1.70158
+    end
+    r4_6 = r4_6 * 1.525
+    r0_6 = r0_6 / r3_6 * 2
+    if r0_6 < 1 then
+      return r2_6 / 2 * r0_6 * r0_6 * ((r4_6 + 1) * r0_6 - r4_6) + r1_6
+    else
+      r0_6 = r0_6 - 2
+      return r2_6 / 2 * (r0_6 * r0_6 * ((r4_6 + 1) * r0_6 + r4_6) + 2) + r1_6
+    end
+  end,
+  back_out_in = function(r0_5, r1_5, r2_5, r3_5, r4_5)
+    -- line: [0, 0] id: 5
+    if r0_5 < r3_5 / 2 then
+      return r41_0(r0_5 * 2, r1_5, r2_5 / 2, r3_5, r4_5)
+    else
+      return r40_0(r0_5 * 2 - r3_5, r1_5 + r2_5 / 2, r2_5 / 2, r3_5, r4_5)
+    end
+  end,
+  bounce_in = r45_0,
+  bounce_out = r44_0,
+  bounce_in_out = function(r0_2, r1_2, r2_2, r3_2)
+    -- line: [0, 0] id: 2
+    if r0_2 < r3_2 / 2 then
+      return r45_0(r0_2 * 2, 0, r2_2, r3_2) * 0.5 + r1_2
+    else
+      return r44_0((r0_2 * 2 - r3_2), 0, r2_2, r3_2) * 0.5 + r2_2 * 0.5 + r1_2
+    end
+  end,
+  bounce_out_in = function(r0_1, r1_1, r2_1, r3_1)
+    -- line: [0, 0] id: 1
+    if r0_1 < r3_1 / 2 then
+      return r44_0(r0_1 * 2, r1_1, r2_1 / 2, r3_1)
+    else
+      return r45_0(r0_1 * 2 - r3_1, r1_1 + r2_1 / 2, r2_1 / 2, r3_1)
+    end
+  end,
+}
+end)()
+local pretty_json = (function()
+	local M = {}
+
+local unpack, tostring = unpack, tostring
+local concat, insert, remove = table.concat, table.insert, table.remove
+local sub, rep, len = string.sub, string.rep, string.len
+local COLOR_SYM_DEFAULT, COLOR_STRING_DEFAULT, COLOR_LITERAL_DEFAULT, COLOR_QUOTE_DEFAULT = {221, 221, 221}, {180, 230, 30}, {96, 160, 220}, {218, 230, 30}
+
+function M.format(json_text, line_feed, indent, ac)
+    json_text = tostring(json_text)
+    line_feed, indent, ac = tostring(line_feed or "\n"), tostring(indent or "\t"), tostring(ac or " ")
+
+    local i, j, k, n, r, p, q = 1, 0, 0, len(json_text), {}, nil, nil
+    local al = sub(ac, -1) == "\n"
+
+    for x = 1, n do
+        local c = sub(json_text, x, x)
+
+        if not q and (c == "{" or c == "[") then
+            r[i] = p == ":" and (c .. line_feed) or (rep(indent, j) .. c .. line_feed)
+            j = j + 1
+        elseif not q and (c == "}" or c == "]") then
+            j = j - 1
+            if p == "{" or p == "[" then
+                i = i - 1
+                r[i] = rep(indent, j) .. p .. c
+            else
+                r[i] = line_feed .. rep(indent, j) .. c
+            end
+        elseif not q and c == "," then
+            r[i] = c .. line_feed
+            k = -1
+        elseif not q and c == ":" then
+            r[i] = c .. ac
+            if al then
+                i = i + 1
+                r[i] = rep(indent, j)
+            end
+        else
+            if c == '"' and p ~= "\\" then
+                q = not q and true or nil
+            end
+            if j ~= k then
+                r[i] = rep(indent, j)
+                i, k = i + 1, j
+            end
+            r[i] = c
+        end
+        p, i = c, i + 1
+    end
+
+    return concat(r)
+end
+
+local pretty_json = M.format
+
+function M.highlight(json_text, color_sym, color_quote, color_string, color_literal)
+    color_sym, color_string, color_literal, color_quote = color_sym or COLOR_SYM_DEFAULT, color_string or COLOR_STRING_DEFAULT, color_literal or COLOR_LITERAL_DEFAULT, color_quote or COLOR_QUOTE_DEFAULT
+    json_text = tostring(json_text)
+
+    local result, prev, quote = {}, nil, nil
+
+    local cur_clr, cur_text = color_sym, {}
+
+    for i = 1, len(json_text) do
+        local c = sub(json_text, i, i)
+        local new_clr
+
+        if not quote and (c == "{" or c == "[") then
+            new_clr = color_sym
+
+            insert(cur_text, c)
+        elseif not quote and (c == "}" or c == "]") then
+            new_clr = color_sym
+            if prev == "{" or prev == "[" then
+                insert(cur_text, prev)
+            else
+                insert(cur_text, c)
+            end
+        elseif not quote and (c == "," or c == ":") then
+            new_clr = color_sym
+            insert(cur_text, c)
+        else
+            if c == '"' and prev ~= "\\" then
+                quote = not quote and true or nil
+                new_clr = color_quote
+            elseif cur_clr == color_quote then
+                new_clr = quote and color_string or color_literal
+            elseif cur_clr == color_sym and (c ~= " " and c ~= "\n" and c ~= "\t") then
+                new_clr = quote and color_string or color_literal
+            end
+
+            insert(cur_text, c)
+        end
+
+        if new_clr ~= nil and new_clr ~= cur_clr then
+            local new_text = {remove(cur_text, #cur_text)}
+
+            insert(result, {cur_clr[1], cur_clr[2], cur_clr[3], concat(cur_text)})
+
+            cur_clr, cur_text = new_clr, new_text
+        end
+
+        prev = c
+    end
+
+    if #cur_text > 0 then
+        insert(result, {cur_clr[1], cur_clr[2], cur_clr[3], concat(cur_text)})
+    end
+
+    return result
+end
+
+local highlight_json = M.highlight
+
+function M.print_highlighted(json_text, color_sym, color_quote, color_string, color_literal)
+    local highlighted = highlight_json(json_text, color_sym, color_string, color_literal, color_quote)
+    local count = #highlighted
+
+    local t = {}
+    for i = 1, count do
+        local r, g, b, str = unpack(highlighted[i])
+        t[#t + 1] = table.concat({"\a", color(r, g, b):to_hex(), str, i == count and "" or "\0"})
+    end
+    print_raw(unpack(t))
+
+    return highlighted
+end
+
+function M.stringify(tbl, line_feed, indent, ac)
+    local success, json_text = pcall(json.stringify, tbl)
+    if not success then
+        error(json_text, 2)
+        return
+    end
+
+    return pretty_json(json_text, line_feed, indent, ac)
+end
+
+return M
+end)()
+local images = (function()
+	local M = {}
+
+--
+-- dependencies
+--
+
+local ffi = require "ffi"
+local csgo_weapons = weapons
+
+local string_gsub = string.gsub
+local math_floor = math.floor
+local cast = ffi.cast
+
+local function vtable_entry(instance, index, type)
+	return cast(type, (cast("void***", instance)[0])[index])
+end
+
+local function vtable_thunk(index, typestring)
+	local t = ffi.typeof(typestring)
+	return function(instance, ...)
+		assert(instance ~= nil)
+		if instance then
+			return vtable_entry(instance, index, t)(instance, ...)
+		end
+	end
+end
+
+local function vtable_bind(module, interface, index, typestring)
+	local instance = utils.create_interface(module, interface) or error("invalid interface")
+	local fnptr = vtable_entry(instance, index, ffi.typeof(typestring)) or error("invalid vtable")
+	return function(...)
+		return fnptr(instance, ...)
+	end
+end
+
+--
+-- ffi structs
+-- (mostly for image parsing)
+--
+
+local png_ihdr_t = ffi.typeof([[
+struct {
+	char type[4];
+	uint32_t width;
+	uint32_t height;
+	char bitDepth;
+	char colorType;
+	char compression;
+	char filter;
+	char interlace;
+} *
+]])
+
+local jpg_segment_t = ffi.typeof([[
+struct {
+	char type[2];
+	uint16_t size;
+} *
+]])
+
+local jpg_segment_sof0_t = ffi.typeof([[
+struct {
+	uint16_t size;
+	char precision;
+	uint16_t height;
+	uint16_t width;
+} __attribute__((packed)) *
+]])
+
+local uint16_t_ptr = ffi.typeof("uint16_t*")
+local charbuffer = ffi.typeof("char[?]")
+local uintbuffer = ffi.typeof("unsigned int[?]")
+
+--
+-- constants
+--
+
+local INVALID_TEXTURE = -1
+local PNG_MAGIC = "\x89\x50\x4E\x47\x0D\x0A\x1A\x0A"
+
+local JPG_MAGIC_1 = "\xFF\xD8\xFF\xDB"
+local JPG_MAGIC_2 = "\xFF\xD8\xFF\xE0\x00\x10\x4A\x46\x49\x46\x00\x01"
+
+local JPG_SEGMENT_SOI = "\xFF\xD8"
+local JPG_SEGMENT_SOF0 = "\xFF\xC0"
+local JPG_SEGMENT_SOS = "\xFF\xDA"
+local JPG_SEGMENT_EOI = "\xFF\xD9"
+
+local RENDERER_LOAD_FUNCS = {
+	png = render.load_image,
+	svg = render.load_image,
+	jpg = render.load_image,
+	rgba = render.load_image_rgba
+}
+
+--
+-- utility functions
+--
+
+local function bswap_16(x)
+	return bit.rshift(bit.bswap(x), 16)
+end
+
+local function hexdump(str)
+	local out = {}
+	str:gsub(".", function(chr)
+		table.insert(out, string.format("%02x", string.byte(chr)))
+	end)
+	return table.concat(out, " ")
+end
+
+--
+-- small filesystem implementation
+--
+
+local native_ReadFile = vtable_bind("filesystem_stdio.dll", "VBaseFileSystem011", 0, "int(__thiscall*)(void*, void*, int, void*)")
+local native_OpenFile = vtable_bind("filesystem_stdio.dll", "VBaseFileSystem011", 2, "void*(__thiscall*)(void*, const char*, const char*, const char*)")
+local native_CloseFile = vtable_bind("filesystem_stdio.dll", "VBaseFileSystem011", 3, "void(__thiscall*)(void*, void*)")
+local native_GetFileSize = vtable_bind("filesystem_stdio.dll", "VBaseFileSystem011", 7, "unsigned int(__thiscall*)(void*, void*)")
+
+local function engine_read_file(filename)
+	local handle = native_OpenFile(filename, "r", "MOD")
+	if handle == nil then return end
+
+	local filesize = native_GetFileSize(handle)
+	if filesize == nil or filesize < 0 then return end
+
+	local buffer = charbuffer(filesize + 1)
+	if buffer == nil then return end
+
+	local read_success = native_ReadFile(buffer, filesize, handle)
+	if not read_success then return end
+
+	return ffi.string(buffer, filesize)
+end
+
+--
+-- ISteamFriends / ISteamUtils
+--
+
+-- That shit now use ingame context of steamapi instead of connecting to global user
+-- enjoy, by w7rus
+
+ffi.cdef([[
+	typedef struct
+	{
+		void* steam_client;
+		void* steam_user;
+		void* steam_friends;
+		void* steam_utils;
+		void* steam_matchmaking;
+		void* steam_user_stats;
+		void* steam_apps;
+		void* steam_matchmakingservers;
+		void* steam_networking;
+		void* steam_remotestorage;
+		void* steam_screenshots;
+		void* steam_http;
+		void* steam_unidentifiedmessages;
+		void* steam_controller;
+		void* steam_ugc;
+		void* steam_applist;
+		void* steam_music;
+		void* steam_musicremote;
+		void* steam_htmlsurface;
+		void* steam_inventory;
+		void* steam_video;
+	} S_steamApiCtx_t;
+]])
+
+local pS_SteamApiCtx = ffi.cast(
+	"S_steamApiCtx_t**", ffi.cast(
+		"char*",
+		utils.opcode_scan("client.dll", "FF 15 ? ? ? ? B9 ? ? ? ? E8 ? ? ? ? 6A")
+	) + 7
+)[0] or error("invalid interface", 2)
+
+local native_ISteamFriends = ffi.cast("void***", pS_SteamApiCtx.steam_friends)
+local native_ISteamUtils = ffi.cast("void***", pS_SteamApiCtx.steam_utils)
+
+local native_ISteamFriends_GetSmallFriendAvatar = vtable_thunk(34, "int(__thiscall*)(void*, uint64_t)")
+local native_ISteamFriends_GetMediumFriendAvatar = vtable_thunk(35, "int(__thiscall*)(void*, uint64_t)")
+local native_ISteamFriends_GetLargeFriendAvatar = vtable_thunk(36, "int(__thiscall*)(void*, uint64_t)")
+
+local native_ISteamUtils_GetImageSize = vtable_thunk(5, "bool(__thiscall*)(void*, int, uint32_t*, uint32_t*)")
+local native_ISteamUtils_GetImageRGBA = vtable_thunk(6, "bool(__thiscall*)(void*, int, unsigned char*, int)")
+
+--
+-- image object implementation
+--
+
+local function image_measure(self, width, height)
+	if width ~= nil and height ~= nil then
+		return width, height
+	else
+		if self.width == nil or self.height == nil then
+			error("Image dimensions not known, full size is required")
+		elseif width == nil then
+			height = height or self.height
+			local width = math_floor(self.width * (height/self.height))
+			return width, height
+		elseif height == nil then
+			width = width or self.width
+			local height = math_floor(self.height * (width/self.width))
+			return width, height
+		else
+			return self.width, self.height
+		end
+	end
+end
+
+local function image_draw(self, x, y, width, height, r, g, b, a, force_same_res_render, flags)
+	width, height = image_measure(self, width, height)
+
+	local id = string.format("%f_%f", width, height)
+	local texture = self.textures[id]
+
+	-- no texture with same width and height has been loaded
+	if texture == nil then
+		if ({next(self.textures)})[2] == nil or force_same_res_render or force_same_res_render == nil then
+			-- try and load the texture
+			local func = RENDERER_LOAD_FUNCS[self.type]
+			if func then
+				if self.type == "rgba" then
+					width, height = self.width, self.height
+				end
+				texture = func(self.contents, vector(width, height))
+			end
+
+			if texture == nil then
+				self.textures[id] = INVALID_TEXTURE
+				error("failed to load texture for " .. width .. "x" .. height, 2)
+			else
+				-- client.log("loaded svg ", self.name, " for ", width, "x", height)
+				self.textures[id] = texture
+			end
+		else
+			--right now we just choose a random texture (determined by the pairs order aka unordered)
+			--todo: select the texture with the highest or closest resolution?
+			texture = ({next(self.textures)})[2]
+		end
+	end
+
+	if texture == nil or texture == INVALID_TEXTURE then
+		return
+	elseif a == nil or a > 0 then
+		render.texture(texture, vector(x, y), vector(width, height), color(r or 255, g or 255, b or 255, a or 255), flags or "f")
+	end
+
+	return width, height
+end
+
+local image_mt = {
+	__index = {
+		measure = image_measure,
+		draw = image_draw
+	}
+}
+
+--
+-- functions for loading images
+--
+
+local function load_png(contents)
+	if contents:sub(1, 8) ~= PNG_MAGIC then
+		error("Invalid magic", 2)
+		return
+	end
+
+	local ihdr_raw = contents:sub(13, 30)
+	if ihdr_raw:len() < 17 then
+		error("Incomplete data", 2)
+		return
+	end
+
+	local ihdr = cast(png_ihdr_t, cast("const uint8_t *", cast("const char*", ihdr_raw)))
+
+	if ffi.string(ihdr.type, 4) ~= "IHDR" then
+		error("Invalid chunk type, expected IHDR", 2)
+		return
+	end
+
+	local width = bit.bswap(ihdr.width)
+	local height = bit.bswap(ihdr.height)
+
+	if width <= 0 or height <= 0 then
+		error("Invalid width or height", 2)
+		return
+	end
+
+	return setmetatable({
+		type = "png",
+		width = width,
+		height = height,
+		contents = contents,
+		textures = {}
+	}, image_mt)
+end
+
+local function load_jpg(contents)
+	local buffer = ffi.cast("const uint8_t *", ffi.cast("const char *", contents))
+	local len_remaining = contents:len()
+
+	local width, height
+
+	if contents:sub(1, 4) == JPG_MAGIC_1 or contents:sub(1, 12) == JPG_MAGIC_2 then
+		local got_soi, got_sos = false, false
+
+		-- read segments until we find a SOF0 header (containing width/height)
+		while len_remaining > 0 do
+			local segment = ffi.cast(jpg_segment_t, buffer)
+			local typ = ffi.string(segment.type, 2)
+
+			buffer = buffer + 2
+			len_remaining = len_remaining - 2
+
+			if typ == JPG_SEGMENT_SOI then
+				got_soi = true
+			elseif not got_soi then
+				error("expected SOI segment", 2)
+			elseif typ == JPG_SEGMENT_SOS or typ == JPG_SEGMENT_EOI then
+				if typ == JPG_SEGMENT_SOS then
+					got_sos = true
+				end
+				break
+			else
+				-- endian convert of the size (be -> le)
+				local size = bswap_16(segment.size)
+
+				if typ == JPG_SEGMENT_SOF0 then
+					local sof0 = cast(jpg_segment_sof0_t, buffer)
+
+					height = bswap_16(sof0.height)
+					width = bswap_16(sof0.width)
+
+					if width <= 0 or height <= 0 then
+						error("Invalid width or height")
+						return
+					end
+				end
+
+				buffer = buffer + size
+				len_remaining = len_remaining - size
+			end
+		end
+
+		if not got_soi then
+			error("Incomplete image, missing SOI segment", 2)
+			return
+		elseif not got_sos then
+			error("Incomplete image, missing SOS segment", 2)
+			return
+		elseif width == nil then
+			error("Incomplete image, missing SOF0 segment", 2)
+			return
+		end
+	else
+		error("Invalid magic", 2)
+		return
+	end
+
+	return setmetatable({
+		type = "jpg",
+		width = width,
+		height = height,
+		contents = contents,
+		textures = {}
+	}, image_mt)
+end
+
+local function load_svg(contents)
+	-- try and find <svg> tag
+
+	local match = contents:match("<svg(.*)>.*</svg>")
+	if match == nil then
+		error("Invalid svg, missing <svg> tag", 2)
+		return
+	end
+
+	match = match:gsub("\r\n", ""):gsub("\n", "")
+
+	-- parse tag contents
+	local in_quote = false
+	local key, value = "", ""
+
+	local attributes = {}
+
+	local offset = 1
+	while true do
+		local chr = match:sub(offset, offset)
+
+		if chr == "" then
+			break
+		end
+
+		if in_quote then
+			-- text inside quotation marks
+			if chr == "\"" then
+				in_quote = false
+				attributes[key:gsub("\t", ""):lower()] = value
+				key, value = "", ""
+			else
+				value = value .. chr
+			end
+		else
+			-- normal text, not inside quotes
+			if chr == ">" then
+				break
+			elseif chr == "=" then
+				if match:sub(offset, offset+1) == "=\"" then
+					in_quote = true
+					offset = offset + 1
+				end
+			elseif chr == " " then
+				key = ""
+			else
+				key = key .. chr
+			end
+		end
+
+		offset = offset + 1
+	end
+
+	-- heuristics to find valid image width and height
+	local width, height
+
+	if attributes["width"] ~= nil then
+		width = tonumber((attributes["width"]:gsub("px$", ""):gsub("pt$", ""):gsub("mm$", "")))
+
+		if width ~= nil and 0 >= width then
+			width = nil
+		end
+	end
+
+	if attributes["height"] ~= nil then
+		height = tonumber((attributes["height"]:gsub("px$", ""):gsub("pt$", ""):gsub("mm$", "")))
+
+		if height ~= nil and 0 >= height then
+			height = nil
+		end
+	end
+
+	if width == nil or height == nil and attributes["viewbox"] ~= nil then
+		local x, y, w, h = attributes["viewbox"]:match("^%s*([%d.]*) ([%d.]*) ([%d.]*) ([%d.]*)%s*$")
+
+		width, height = tonumber(width), tonumber(height)
+
+		if width ~= nil and height ~= nil and (0 >= width or 0 >= height) then
+			width, height = nil, nil
+		end
+	end
+
+	local self = setmetatable({
+		type = "svg",
+		contents = contents,
+		textures = {}
+	}, image_mt)
+
+	if width ~= nil and height ~= nil and width > 0 and height > 0 then
+		self.width, self.height = width, height
+	end
+
+	return self
+end
+
+local function load_rgba(contents, width, height)
+	if width == nil or height == nil or width <= 0 or height <= 0 then
+		error("Invalid size: width and height are required and have to be greater than zero.")
+		return
+	end
+
+	local size = width*height*4
+	if contents:len() ~= size then
+		error("invalid buffer length, expected width*height*4", 2)
+		return
+	end
+
+	-- load texture
+	local texture = render.load_rgba(contents, vector(width, height))
+	if texture == nil then
+		return
+	end
+
+	return setmetatable({
+		type = "rgba",
+		width = width,
+		height = height,
+		contents = contents,
+		textures = {[string.format("%f_%f", width, height)] = texture}
+	}, image_mt)
+end
+
+local function load_image(contents)
+	if type(contents) == "table" then
+		if getmetatable(contents) == image_mt then
+			return error("trying to load an existing image")
+		else
+			local result = {}
+			for key, value in pairs(contents) do
+				result[key] = load_image(value)
+			end
+			return result
+		end
+	else
+		-- try and determine type etc by looking for magic value
+		if type(contents) == "string" then
+			if contents:sub(1, 8) == PNG_MAGIC then
+				return load_png(contents)
+			elseif contents:sub(1, 4) == JPG_MAGIC_1 or contents:sub(1, 12) == JPG_MAGIC_2 then
+				return load_jpg(contents)
+			elseif contents:match("^%s*%<%?xml") ~= nil then
+				return load_svg(contents)
+			else
+				return error("Failed to determine image type")
+			end
+		end
+	end
+end
+
+local panorama_images = setmetatable({},  {__mode = "k"})
+local function get_panorama_image(path)
+	if panorama_images[path] == nil then
+		local path_cleaned = string_gsub(string_gsub(string_gsub(string_gsub(string_gsub(path, "%z", ""), "%c", ""), "\\", "/"), "%.%./", ""), "^/+", "")
+		local contents = engine_read_file("materials/panorama/images/" .. path_cleaned)
+
+		if contents then
+			local image = load_image(contents)
+
+			panorama_images[path] = image
+		else
+			panorama_images[path] = false
+		end
+	end
+
+	if panorama_images[path] then
+		return panorama_images[path]
+	end
+end
+
+local weapon_icons = setmetatable({}, {__mode = "k"})
+local function get_weapon_icon(weapon_name)
+	if weapon_icons[weapon_name] == nil then
+		local weapon_name_cleaned
+		local typ = type(weapon_name)
+
+		if typ == "table" and weapon_name.console_name ~= nil then
+			weapon_name_cleaned = weapon_name.console_name
+		elseif typ == "number" then
+			local weapon = csgo_weapons[weapon_name]
+			if weapon == nil then
+				weapon_icons[weapon_name] = false
+				return
+			end
+			weapon_name_cleaned = weapon.console_name
+		elseif typ == "string" then
+			weapon_name_cleaned = tostring(weapon_name)
+		elseif weapon_name ~= nil then
+			weapon_icons[weapon_name] = nil
+			return
+		else
+			return
+		end
+
+		weapon_name_cleaned = string_gsub(string_gsub(weapon_name_cleaned, "^weapon_", ""), "^item_", "")
+
+		local image = get_panorama_image("icons/equipment/" .. weapon_name_cleaned .. ".svg")
+		weapon_icons[weapon_name] = image or false
+	end
+
+	if weapon_icons[weapon_name] then
+		return weapon_icons[weapon_name]
+	end
+end
+
+return {
+	load = load_image,
+	load_png = load_png,
+	load_jpg = load_jpg,
+	load_svg = load_svg,
+	load_rgba = load_rgba,
+	get_weapon_icon = get_weapon_icon,
+	get_panorama_image = get_panorama_image,
+}
+end)()
 
 do
     local aa = {["char[?]"] = ffi.typeof "char[?]"}
@@ -572,7 +2345,134 @@ function images.get_weapon_icon_2(t)
         return images.ag[t]
     end
 end
-local table_gen = require "gamesense/table_gen"
+local table_gen = (function()
+	local M = {}
+
+local table_insert, table_concat, string_rep, string_len, string_sub = table.insert, table.concat, string.rep, string.len, string.sub
+local math_max, math_floor, math_ceil = math.max, math.floor, math.ceil
+
+local function len(str)
+	local _, count = string.gsub(tostring(str), "[^\128-\193]", "")
+	return count
+end
+
+local styles = {
+	--					 1    2     3    4    5     6    7    8     9    10   11
+	["ASCII"] = {"-", "|", "+"},
+	["Compact"] = {"-", " ", " ", " ", " ", " ", " ", " "},
+	["ASCII (Girder)"] = {"=", "||",  "//", "[]", "\\\\",  "|]", "[]", "[|",  "\\\\", "[]", "//"},
+	["Unicode"] = {"═", "║",  "╔", "╦", "╗",  "╠", "╬", "╣",  "╚", "╩", "╝"},
+	["Unicode (Single Line)"] = {"─", "│",  "┌", "┬", "┐",  "├", "┼", "┤",  "└", "┴", "┘"},
+	["Markdown (Github)"] = {"-", "|", "|"}
+}
+
+--initialize missing style values (ascii etc)
+for _, style in pairs(styles) do
+	if #style == 3 then
+		for j=4, 11 do
+			style[j] = style[3]
+		end
+	end
+end
+
+local function justify_center(text, width)
+	text = string_sub(text, 1, width)
+	local length = len(text)
+	return string_rep(" ", math_floor(width/2-length/2)) .. text .. string_rep(" ", math_ceil(width/2-length/2))
+end
+
+local function justify_left(text, width)
+	text = string_sub(text, 1, width)
+	return text .. string_rep(" ", width-len(text))
+end
+
+function M.generate_table(rows, headings, options)
+	if type(options) == "string" or options == nil then
+		options = {
+			style=options or "ASCII",
+		}
+	end
+
+	if options.top_line == nil then
+		options.top_line = options.style ~= "Markdown (Github)"
+	end
+
+	if options.bottom_line == nil then
+		options.bottom_line = options.style ~= "Markdown (Github)"
+	end
+
+	if options.header_seperator_line == nil then
+		options.header_seperator_line = true
+	end
+
+	local seperators = styles[options.style] or styles["ASCII"]
+
+	local rows_out, columns_width, columns_count = {}, {}, 0
+	local has_headings = headings ~= nil and #headings > 0
+
+	if has_headings then
+		for i=1, #headings do
+			columns_width[i] = len(headings[i])+2
+		end
+		columns_count = #headings
+	else
+		for i=1, #rows do
+			columns_count = math_max(columns_count, #rows[i])
+		end
+	end
+
+	for i=1, #rows do
+		local row = rows[i]
+		for c=1, columns_count do
+			columns_width[c] = math_max(columns_width[c] or 2, len(row[c])+2)
+		end
+	end
+
+	local column_seperator_rows = {}
+	for i=1, columns_count do
+		table_insert(column_seperator_rows, string_rep(seperators[1], columns_width[i]))
+	end
+	if options.top_line then
+		table_insert(rows_out, seperators[3] .. table_concat(column_seperator_rows, seperators[4]) .. seperators[5])
+	end
+
+	if has_headings then
+		local headings_justified = {}
+		for i=1, columns_count do
+			headings_justified[i] = justify_center(headings[i], columns_width[i])
+		end
+		table_insert(rows_out, seperators[2] .. table_concat(headings_justified, seperators[2]) .. seperators[2])
+		if options.header_seperator_line then
+			table_insert(rows_out, seperators[6] .. table_concat(column_seperator_rows, seperators[7]) .. seperators[8])
+		end
+	end
+
+	for i=1, #rows do
+		local row, row_out = rows[i], {}
+		if #row == 0 then
+			table_insert(rows_out, seperators[6] .. table_concat(column_seperator_rows, seperators[7]) .. seperators[8])
+		else
+			for j=1, columns_count do
+				local justified = options.value_justify == "center" and justify_center(row[j] or "", columns_width[j]-2) or justify_left(row[j] or "", columns_width[j]-2)
+				row_out[j] = " " .. justified .. " "
+			end
+			table_insert(rows_out, seperators[2] .. table_concat(row_out, seperators[2]) .. seperators[2])
+		end
+	end
+
+	if options.bottom_line and seperators[9] then
+		table_insert(rows_out, seperators[9] .. table_concat(column_seperator_rows, seperators[10]) .. seperators[11])
+	end
+
+	return table_concat(rows_out, "\n")
+end
+
+return setmetatable(M, {
+	__call = function(_, ...)
+		return M.generate_table(...)
+	end
+})
+end)()
 
 local table_clear = function(tbl)
     for aw in pairs(tbl) do
@@ -2225,132 +4125,6 @@ local function sort_by_distsqr(a, b)
 end
 
 local function source_get_index_data(url, callback)
-	local http_libs = http_lib.new({
-		task_interval = 1,
-		enable_debug = false,
-		timeout = 10
-	})
-
-	http_libs:get(url, function(response)
-		local data = {}
-		if not response:success() or response.status ~= 200 or response.body == "404: Not Found" then
-			if response.body == "404: Not Found" then
-				callback("404 - Not Found")
-			else
-				callback(string.format("%s - %s", response.status, response.status_message))
-			end
-
-			return
-		end
-
-		local valid_json, jso = pcall(json.parse, response.body)
-		if not valid_json then
-			callback("Invalid JSON: " .. jso)
-			return
-		end
-
-		-- name is always required
-		if type(jso.name) == "string" then
-			data.name = jso.name
-		else
-			callback("Invalid name")
-			return
-		end
-
-		-- description can be nil or string
-		if jso.description == nil or type(jso.description) == "string" then
-			data.description = jso.description
-		else
-			callback("Invalid description")
-			return
-		end
-
-		-- update_timestamp can be nil or number
-		if jso.update_timestamp == nil or type(jso.update_timestamp) == "number" then
-			data.update_timestamp = jso.update_timestamp
-		else
-			callback("Invalid update_timestamp")
-			return
-		end
-
-		if jso.url_format ~= nil then
-			-- dealing with a split location
-			if type(jso.url_format) ~= "string" or not jso.url_format:match("^https?://.+$") then
-				callback("Invalid url_format")
-				return
-			end
-
-			-- simple sanity check, make sure <map> is contained in the string
-			if not jso.url_format:find("%%map%%") then
-				callback("Invalid url_format - %map% is required")
-				return
-			end
-
-			data.url_format = jso.url_format
-		else
-			data.url_format = nil
-		end
-
-		-- create a lookup table for location aliases, or clear it if no locations are set (only valid for split location, will be checked later)
-		data.location_aliases = {}
-		data.locations = {}
-		if type(jso.locations) == "table" then
-			for map, map_data in pairs(jso.locations) do
-				if type(map) ~= "string" then
-					callback("Invalid key in locations")
-					return
-				end
-
-				if type(map_data) == "string" then
-					-- this is an alias
-					data.location_aliases[map] = map_data
-				elseif type(map_data) == "table" then
-					data.locations[map] = map_data
-				elseif jso.url_format ~= nil then
-					-- not an alias and non-alias is forbidden for split locations
-					callback("Location data is forbidden for split locations")
-					return
-				end
-			end
-		elseif jso.locations ~= nil then
-			callback("Invalid locations")
-			return
-		end
-
-		if next(data.location_aliases) == nil then
-			data.location_aliases = nil
-		end
-
-		if next(data.locations) == nil then
-			data.locations = nil
-		end
-
-		-- save last_updated to location
-		data.last_updated = get_unix_timestamp()
-
-		-- for a normal location, parse locations and update data in helper_store av
-		-- if data.url_format == nil then
-		-- 	-- data.locations is already checked above, so we can safely use it
-		-- 	local new_locations = {}
-
-		-- 	for map, map_data in pairs(data.locations) do
-		-- 		if type(map_data) == "table" then
-		-- 			print("source_get_index_data calling parse_and_create_locations")
-		-- 			print(inspect(data.locations))
-		-- 			print(inspect(map_data))
-		-- 			local success, locations = pcall(parse_and_create_locations, map_data, map)
-
-		-- 			if not success then
-		-- 				return callback(string.format("Invalid locations for %s: %s", map, locations))
-		-- 			end
-
-		-- 			data.locations[map] = locations
-		-- 		end
-		-- 	end
-		-- end
-
-		callback(nil, data)
-	end)
 end
 
 local source_mt = {
@@ -2581,42 +4355,6 @@ local source_mt = {
 
 					self.remote_status = string.format("Loading map data for %s...", mapname)
 					update_sources_ui()
-
-					local http_libs = http_lib.new({
-						task_interval = 1,
-						enable_debug = false,
-						timeout = 10
-					})
-				
-					http_libs:get(url, function(response)
-						if not response:success() or response.status ~= 200 or response.body == "404: Not Found" then
-							if response.status == 404 or response.body == "404: Not Found" then
-								self.remote_status = string.format("No locations found for %s.", mapname)
-							else
-								self.remote_status = string.format("Failed to fetch %s: %s %s", mapname, response.status, response.status_message)
-							end
-							update_sources_ui()
-							return
-						end
-
-						local success, locations = pcall(parse_and_create_locations, response.body, mapname)
-						if not success then
-							self.remote_status = string.format("Invalid map data: %s", locations)
-							update_sources_ui()
-							client.error_log(string.format("Failed to load map data for %s (%s): %s", self.name, mapname, locations))
-							return
-						end
-
-						-- set in runtime cache
-						sources_locations[self][mapname] = locations
-
-						-- save runtime cache to av
-						self:store_write(mapname)
-
-						self.remote_status = nil
-						update_sources_ui()
-						flush_active_locations("C")
-					end)
 				else
 					if locations == nil then
 						-- print("failed to fetch locations for: ", inspect(self))
